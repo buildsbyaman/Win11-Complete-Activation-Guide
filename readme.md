@@ -1,10 +1,20 @@
+<div style="margin: 40px; line-height: 1.8; font-family: sans-serif;">
+
 ## Steps to Convert Win 11 LTSC Eval Version to Full Version
 
+
 1. Download Evaluation folder: https://archive.org/details/enterprise_SKU
+
+
 2. Copy Evaluation Folder to: `C:\Windows\System32\spp\tokens\skus`
+
+
 3. Run these commands in CMD as administrator:
 
-```cmd
+
+<button>Copy Code</button>
+
+```text
 cd C:\Windows\System32\spp\tokens\skus  
 cscript.exe %windir%\system32\slmgr.vbs /rilc
 cscript.exe %windir%\system32\slmgr.vbs /upk >nul 2>&1
@@ -15,29 +25,50 @@ sc config LicenseManager start= auto & net start LicenseManager
 sc config wuauserv start= auto & net start wuauserv
 ```
 
+
 ## Activate Windows/Office (Powershell)
 
-```powershell
+
+<button>Copy Code</button>
+
+```text
 irm https://get.activated.win | iex
 ```
 
+
 ## Disable Search Highlights (CMD as Administrator)
 
-```cmd
+
+<button>Copy Code</button>
+
+```text
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\SearchSettings" /v IsDynamicSearchBoxEnabled /t REG_DWORD /d 0 /f
+taskkill /f /im explorer.exe
+start explorer.exe
 ```
+
 
 ## Remove Search Suggestions
 
-```cmd
+
+<button>Copy Code</button>
+
+```text
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\SearchSettings" /v IsDynamicSearchBoxEnabled /t REG_DWORD /d 0 /f
+taskkill /f /im explorer.exe
+start explorer.exe
 ```
+
 
 ## Disable Updates Permanently
 
+
 Run the following script as Administrator:
 
-```powershell
+
+<button>Copy Code</button>
+
+```text
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]"Administrator")) {
     Write-Error "ERROR: Must be run as Administrator."; exit 1
 }
@@ -141,3 +172,5 @@ if (Test-Path $orchPath) {
 }
 Write-Host "Done. Restart your PC for full effect." -ForegroundColor Green
 ```
+
+</div>
