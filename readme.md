@@ -1,5 +1,3 @@
-# Windows 11 LTSC Evaluation to Full Version Conversion
-
 ## Steps to Convert Win 11 LTSC Eval Version to Full Version
 
 1. Download Evaluation folder: https://archive.org/details/enterprise_SKU
