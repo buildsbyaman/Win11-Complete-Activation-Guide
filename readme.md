@@ -165,46 +165,66 @@ $updateCachePaths = @(
     "$env:SystemRoot\SoftwareDistribution\DeliveryOptimization"
 )
 foreach ($path in $updateCachePaths) { if (Test-Path $path) { Remove-Item -Path "$path\*" -Recurse -Force -ErrorAction SilentlyContinue } }
-$watcherScript = @'
-$wuProcessNames = @("wuauclt","UsoClient","WaaSMedicAgent","TiWorker","TrustedInstaller","wusa")
-$updateCachePaths = @("$env:SystemRoot\SoftwareDistribution\Download","$env:SystemRoot\SoftwareDistribution\DeliveryOptimization")
+$actionScriptPath = "C:\Windows\System32\WUKill.ps1"
+$killScript = @'
 $services = @("wuauserv","bits","usosvc","WaaSMedicSvc","dosvc","UsoSvc")
-$wmiQueries = @()
-foreach ($procName in $wuProcessNames) {
-    $query = "SELECT * FROM __InstanceCreationEvent WITHIN 1 WHERE TargetInstance ISA 'Win32_Process' AND TargetInstance.Name = '$procName.exe'"
-    $watcher = New-Object System.Management.ManagementEventWatcher($query)
-    $watcher.Options.Timeout = [System.TimeSpan]::MaxValue
-    $action = {
-        param($sender, $e)
-        $procName = $e.NewEvent.TargetInstance.Name
-        $pid = $e.NewEvent.TargetInstance.ProcessId
-        try { Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue } catch {}
-        foreach ($svc in $services) { $s = Get-Service -Name $svc -ErrorAction SilentlyContinue; if ($s -and $s.Status -eq "Running") { Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue } }
-        foreach ($path in $updateCachePaths) { if (Test-Path $path) { Remove-Item -Path "$path\*" -Recurse -Force -ErrorAction SilentlyContinue } }
-        $medicKey = "HKLM:\SYSTEM\CurrentControlSet\Services\WaaSMedicSvc"
-        $startVal = (Get-ItemProperty -Path $medicKey -Name "Start" -ErrorAction SilentlyContinue).Start
-        if ($startVal -ne 4) { try { Set-ItemProperty -Path $medicKey -Name "Start" -Value 4 -Force -ErrorAction SilentlyContinue } catch {} }
-    }
-    $watcher.add_EventArrived($action)
-    $watcher.Start()
-    $wmiQueries += $watcher
-}
-while ($true) { Start-Sleep -Seconds 3600 }
+$updateCachePaths = @("$env:SystemRoot\SoftwareDistribution\Download","$env:SystemRoot\SoftwareDistribution\DeliveryOptimization")
+foreach ($svc in $services) { Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue }
+foreach ($path in $updateCachePaths) { if (Test-Path $path) { Remove-Item -Path "$path\*" -Recurse -Force -ErrorAction SilentlyContinue } }
+$medicKey = "HKLM:\SYSTEM\CurrentControlSet\Services\WaaSMedicSvc"
+$startVal = (Get-ItemProperty -Path $medicKey -Name "Start" -ErrorAction SilentlyContinue).Start
+if ($startVal -ne 4) { try { Set-ItemProperty -Path $medicKey -Name "Start" -Value 4 -Force -ErrorAction SilentlyContinue } catch {} }
 '@
-$watcherPath = "C:\Windows\System32\WUWatcher.ps1"
-$watcherScript | Set-Content -Path $watcherPath -Force
+$killScript | Set-Content -Path $actionScriptPath -Force
+$wuProcessNames = @("wuauclt","UsoClient","WaaSMedicAgent","TiWorker","wusa")
+$scope = New-Object System.Management.ManagementScope("\\.\root\subscription")
+$scope.Connect()
+foreach ($procName in $wuProcessNames) {
+    $filterName = "WUFilter_$procName"
+    $consumerName = "WUConsumer_$procName"
+    $filterQuery = "SELECT * FROM __InstanceCreationEvent WITHIN 2 WHERE TargetInstance ISA 'Win32_Process' AND TargetInstance.Name = '$procName.exe'"
+    try {
+        $existingFilter = Get-WMIObject -Namespace "root\subscription" -Class "__EventFilter" -Filter "Name='$filterName'" -ErrorAction SilentlyContinue
+        if ($existingFilter) { $existingFilter.Delete() }
+        $filterPath = New-Object System.Management.ManagementPath("__EventFilter")
+        $filterClass = New-Object System.Management.ManagementClass($scope, $filterPath, $null)
+        $filter = $filterClass.CreateInstance()
+        $filter["Name"] = $filterName
+        $filter["EventNameSpace"] = "root\cimv2"
+        $filter["QueryLanguage"] = "WQL"
+        $filter["Query"] = $filterQuery
+        $filter.Put() | Out-Null
+        $existingConsumer = Get-WMIObject -Namespace "root\subscription" -Class "CommandLineEventConsumer" -Filter "Name='$consumerName'" -ErrorAction SilentlyContinue
+        if ($existingConsumer) { $existingConsumer.Delete() }
+        $consumerPath = New-Object System.Management.ManagementPath("CommandLineEventConsumer")
+        $consumerClass = New-Object System.Management.ManagementClass($scope, $consumerPath, $null)
+        $consumer = $consumerClass.CreateInstance()
+        $consumer["Name"] = $consumerName
+        $consumer["CommandLineTemplate"] = "powershell.exe -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$actionScriptPath`""
+        $consumer.Put() | Out-Null
+        $existingBinding = Get-WMIObject -Namespace "root\subscription" -Class "__FilterToConsumerBinding" -ErrorAction SilentlyContinue | Where-Object { $_.Filter -like "*$filterName*" }
+        if ($existingBinding) { $existingBinding.Delete() }
+        $bindingPath = New-Object System.Management.ManagementPath("__FilterToConsumerBinding")
+        $bindingClass = New-Object System.Management.ManagementClass($scope, $bindingPath, $null)
+        $binding = $bindingClass.CreateInstance()
+        $binding["Filter"] = $filter.Path.RelativePath
+        $binding["Consumer"] = $consumer.Path.RelativePath
+        $binding.Put() | Out-Null
+    } catch { Write-Host "WMI subscription failed for $procName : $_" -ForegroundColor Yellow }
+}
 $scriptPath = "C:\Windows\System32\BlockWindowsUpdate.ps1"
-Copy-Item -Path $MyInvocation.MyCommand.Path -Destination $scriptPath -Force -ErrorAction SilentlyContinue
+$scriptContent = $MyInvocation.MyCommand.ScriptBlock.ToString()
+if ($MyInvocation.MyCommand.Path) {
+    Copy-Item -Path $MyInvocation.MyCommand.Path -Destination $scriptPath -Force -ErrorAction SilentlyContinue
+} else {
+    $scriptContent | Out-File -FilePath $scriptPath -Force -Encoding UTF8
+}
 $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
 $action1 = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`""
 $trigger1 = New-ScheduledTaskTrigger -AtStartup
 $trigger2 = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Hours 1) -Once -At (Get-Date)
 $settings1 = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
 Register-ScheduledTask -TaskName "BlockWindowsUpdatePersist" -Action $action1 -Trigger $trigger1,$trigger2 -Settings $settings1 -Principal $principal -Force | Out-Null
-$action2 = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$watcherPath`""
-$trigger3 = New-ScheduledTaskTrigger -AtStartup
-$settings2 = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Days 999)
-Register-ScheduledTask -TaskName "BlockWindowsUpdateWatcher" -Action $action2 -Trigger $trigger3 -Settings $settings2 -Principal $principal -Force | Out-Null
 Write-Host "Done. Restart your PC for full effect." -ForegroundColor Green
 ```
 
