@@ -1,4 +1,4 @@
-<div style="margin: 40px; line-height: 1.8; font-family: sans-serif;">
+<div style="margin: 20px; line-height: 1.8; font-family: sans-serif;">
 
 ## Steps to Convert Win 11 LTSC Eval Version to Full Version
 
@@ -11,8 +11,6 @@
 
 3. Run these commands in CMD as administrator:
 
-
-<button>Copy Code</button>
 
 ```text
 cd C:\Windows\System32\spp\tokens\skus  
@@ -29,8 +27,6 @@ sc config wuauserv start= auto & net start wuauserv
 ## Activate Windows/Office (Powershell)
 
 
-<button>Copy Code</button>
-
 ```text
 irm https://get.activated.win | iex
 ```
@@ -38,8 +34,6 @@ irm https://get.activated.win | iex
 
 ## Disable Search Highlights (CMD as Administrator)
 
-
-<button>Copy Code</button>
 
 ```text
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\SearchSettings" /v IsDynamicSearchBoxEnabled /t REG_DWORD /d 0 /f
@@ -50,8 +44,6 @@ start explorer.exe
 
 ## Remove Search Suggestions
 
-
-<button>Copy Code</button>
 
 ```text
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\SearchSettings" /v IsDynamicSearchBoxEnabled /t REG_DWORD /d 0 /f
@@ -65,8 +57,6 @@ start explorer.exe
 
 Run the following script as Administrator:
 
-
-<button>Copy Code</button>
 
 ```text
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]"Administrator")) {
@@ -133,7 +123,7 @@ Set-ItemProperty -Path $wuPolicyPath -Name "WUServer" -Type String -Value " "
 Set-ItemProperty -Path $wuPolicyPath -Name "WUStatusServer" -Type String -Value " "
 Set-ItemProperty -Path $wuPolicyPath -Name "UpdateServiceUrlAlternate" -Type String -Value " "
 $hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
-$wuDomains = @("windowsupdate.microsoft.com","update.microsoft.com","download.windowsupdate.com","download.microsoft.com","wustat.windows.com","ntservicepack.microsoft.com","go.microsoft.com","dl.delivery.mp.microsoft.com","geo-prod.do.dsp.mp.microsoft.com")
+$wuDomains = @("windowsupdate.microsoft.com","update.microsoft.com","download.windowsupdate.com","wustat.windows.com","ntservicepack.microsoft.com","geo-prod.do.dsp.mp.microsoft.com")
 $hostsContent = Get-Content $hostsPath -ErrorAction SilentlyContinue
 foreach ($domain in $wuDomains) { $entry = "0.0.0.0 $domain"; if ($hostsContent -notcontains $entry) { Add-Content -Path $hostsPath -Value $entry } }
 $tasks = @(
@@ -155,8 +145,8 @@ $tasks = @(
     "\Microsoft\Windows\InstallService\SmartRetry"
 )
 foreach ($task in $tasks) { schtasks /Change /TN $task /Disable 2>$null }
-$fwRuleNames = @("Block WU svchost","Block WU wuauclt","Block WU UsoClient")
-$fwPrograms = @("$env:SystemRoot\System32\svchost.exe","$env:SystemRoot\System32\wuauclt.exe","$env:SystemRoot\System32\UsoClient.exe")
+$fwRuleNames = @("Block WU wuauclt","Block WU UsoClient")
+$fwPrograms = @("$env:SystemRoot\System32\wuauclt.exe","$env:SystemRoot\System32\UsoClient.exe")
 for ($i = 0; $i -lt $fwRuleNames.Count; $i++) {
     $existing = Get-NetFirewallRule -DisplayName $fwRuleNames[$i] -ErrorAction SilentlyContinue
     if (-not $existing) { New-NetFirewallRule -DisplayName $fwRuleNames[$i] -Direction Outbound -Action Block -Program $fwPrograms[$i] -Enabled True -Profile Any | Out-Null }
@@ -170,6 +160,51 @@ if (Test-Path $orchPath) {
         Set-Acl -Path $orchPath -AclObject $acl
     } catch {}
 }
+$updateCachePaths = @(
+    "$env:SystemRoot\SoftwareDistribution\Download",
+    "$env:SystemRoot\SoftwareDistribution\DeliveryOptimization"
+)
+foreach ($path in $updateCachePaths) { if (Test-Path $path) { Remove-Item -Path "$path\*" -Recurse -Force -ErrorAction SilentlyContinue } }
+$watcherScript = @'
+$wuProcessNames = @("wuauclt","UsoClient","WaaSMedicAgent","TiWorker","TrustedInstaller","wusa")
+$updateCachePaths = @("$env:SystemRoot\SoftwareDistribution\Download","$env:SystemRoot\SoftwareDistribution\DeliveryOptimization")
+$services = @("wuauserv","bits","usosvc","WaaSMedicSvc","dosvc","UsoSvc")
+$wmiQueries = @()
+foreach ($procName in $wuProcessNames) {
+    $query = "SELECT * FROM __InstanceCreationEvent WITHIN 1 WHERE TargetInstance ISA 'Win32_Process' AND TargetInstance.Name = '$procName.exe'"
+    $watcher = New-Object System.Management.ManagementEventWatcher($query)
+    $watcher.Options.Timeout = [System.TimeSpan]::MaxValue
+    $action = {
+        param($sender, $e)
+        $procName = $e.NewEvent.TargetInstance.Name
+        $pid = $e.NewEvent.TargetInstance.ProcessId
+        try { Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue } catch {}
+        foreach ($svc in $services) { $s = Get-Service -Name $svc -ErrorAction SilentlyContinue; if ($s -and $s.Status -eq "Running") { Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue } }
+        foreach ($path in $updateCachePaths) { if (Test-Path $path) { Remove-Item -Path "$path\*" -Recurse -Force -ErrorAction SilentlyContinue } }
+        $medicKey = "HKLM:\SYSTEM\CurrentControlSet\Services\WaaSMedicSvc"
+        $startVal = (Get-ItemProperty -Path $medicKey -Name "Start" -ErrorAction SilentlyContinue).Start
+        if ($startVal -ne 4) { try { Set-ItemProperty -Path $medicKey -Name "Start" -Value 4 -Force -ErrorAction SilentlyContinue } catch {} }
+    }
+    $watcher.add_EventArrived($action)
+    $watcher.Start()
+    $wmiQueries += $watcher
+}
+while ($true) { Start-Sleep -Seconds 3600 }
+'@
+$watcherPath = "C:\Windows\System32\WUWatcher.ps1"
+$watcherScript | Set-Content -Path $watcherPath -Force
+$scriptPath = "C:\Windows\System32\BlockWindowsUpdate.ps1"
+Copy-Item -Path $MyInvocation.MyCommand.Path -Destination $scriptPath -Force -ErrorAction SilentlyContinue
+$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+$action1 = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`""
+$trigger1 = New-ScheduledTaskTrigger -AtStartup
+$trigger2 = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Hours 1) -Once -At (Get-Date)
+$settings1 = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
+Register-ScheduledTask -TaskName "BlockWindowsUpdatePersist" -Action $action1 -Trigger $trigger1,$trigger2 -Settings $settings1 -Principal $principal -Force | Out-Null
+$action2 = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$watcherPath`""
+$trigger3 = New-ScheduledTaskTrigger -AtStartup
+$settings2 = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Days 999)
+Register-ScheduledTask -TaskName "BlockWindowsUpdateWatcher" -Action $action2 -Trigger $trigger3 -Settings $settings2 -Principal $principal -Force | Out-Null
 Write-Host "Done. Restart your PC for full effect." -ForegroundColor Green
 ```
 
